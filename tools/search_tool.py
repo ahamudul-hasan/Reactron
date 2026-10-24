@@ -1,10 +1,3 @@
-"""Tavily search tool for web retrieval.
-
-This module provides a search tool using the Tavily Search API.
-It extracts compact results containing title, source URL, and content snippet,
-with graceful error handling for missing keys, network issues, and rate limits.
-"""
-
 import os
 from typing import Optional
 from dotenv import load_dotenv
@@ -16,7 +9,6 @@ from tavily import (
     UsageLimitExceededError,
 )
 
-# Load environment variables from .env if present
 load_dotenv()
 
 MAX_QUERY_LENGTH = 300
@@ -40,16 +32,6 @@ def _clean_text(text: str) -> str:
 
 
 def tavily_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, api_key: Optional[str] = None) -> str:
-    """Execute a web search using the Tavily API and return structured, concise results.
-
-    Args:
-        query: The search query string.
-        max_results: Maximum number of search results to retrieve (default: 3).
-        api_key: Optional explicit Tavily API key. If not provided, reads TAVILY_API_KEY from environment.
-
-    Returns:
-        A formatted string with titles, URLs, and snippets, or a descriptive error message.
-    """
     if not isinstance(query, str):
         return "Error: Search query must be a string."
 
@@ -106,13 +88,4 @@ def tavily_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, api_key: O
 
 @tool
 def search_tool(query: str) -> str:
-    """Search the web for current, up-to-date information, facts, or statistics.
-
-    Use this tool whenever you need recent facts, population estimates, news,
-    or data that requires verification from reliable external web sources.
-    Always cite the source URL from the search results in your final answer.
-
-    Args:
-        query: Short, descriptive search query (e.g., 'latest population estimate for Bangladesh').
-    """
     return tavily_search(query)
