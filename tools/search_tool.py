@@ -88,4 +88,13 @@ def tavily_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, api_key: O
 
 @tool
 def search_tool(query: str) -> str:
+    """Search the web for current facts, statistics, population data, or news.
+
+    Use this tool whenever you need up-to-date information or data that requires
+    verification from external web sources.
+
+    Args:
+        query: The search query string (e.g., 'latest population estimate for Bangladesh').
+    """
     return tavily_search(query)
+
