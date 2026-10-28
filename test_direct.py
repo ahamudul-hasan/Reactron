@@ -1,12 +1,12 @@
 """Demonstration script calling LangChain tools directly without an LLM.
 
-Step 6 Verification:
+Step 6 & 7 Verification:
 Ensures each tool is correctly registered with LangChain's @tool decorator,
 has an accessible schema/description, and can be invoked directly.
 """
 
 import sys
-from tools import calculator_tool, search_tool
+from tools import calculator_tool, python_tool, search_tool
 
 # Ensure standard UTF-8 output encoding for console displays
 if sys.stdout.encoding.lower() != "utf-8":
@@ -18,7 +18,7 @@ if sys.stdout.encoding.lower() != "utf-8":
 
 def main():
     print("=" * 60)
-    print("STEP 6 VERIFICATION: DIRECT LANGCHAIN TOOL INVOCATION")
+    print("TOOLKIT VERIFICATION: DIRECT LANGCHAIN TOOL INVOCATION")
     print("=" * 60)
 
     # 1. Inspect Calculator Tool
@@ -39,11 +39,22 @@ def main():
     search_input = {"query": "Bangladesh population estimate"}
     search_result = search_tool.invoke(search_input)
     print(f"    Input:       {search_input}")
-    # Print a truncated preview of the observation
     preview = search_result[:300] + ("..." if len(search_result) > 300 else "")
     print(f"    Output Preview:\n{preview}")
     assert "URL:" in search_result, "Expected 'URL:' in search results"
     print("    --> Search Tool invocation successful!")
+
+    # 3. Inspect Python Dry-Run Tool
+    print("\n[3] Testing Python Tool (@tool python_tool)...")
+    print(f"    Name:        {python_tool.name}")
+    print(f"    Description: {python_tool.description.strip().splitlines()[0]}")
+    python_input = {"code": "def greet(name):\n    return f'Hello, {name}'"}
+    python_result = python_tool.invoke(python_input)
+    print(f"    Input:       {python_input}")
+    print(f"    Output Preview:\n{python_result}")
+    assert "Security Notice" in python_result, "Expected 'Security Notice' in python_tool output"
+    assert "Syntax Valid" in python_result, "Expected 'Syntax Valid' in python_tool output"
+    print("    --> Python Tool invocation successful!")
 
     print("\n" + "=" * 60)
     print("ALL TOOLS SUCCESSFULLY TESTED DIRECTLY (ZERO LLM DEPENDENCY)")
