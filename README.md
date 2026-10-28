@@ -71,7 +71,7 @@ flowchart TD
 ### 1. Deterministic Math Engine (`tools/calculator_tool.py`)
 * **Elimination of `eval()`:** Python's built-in `eval()` is a critical security vulnerability and prone to arbitrary code execution. Reactron utilizes `numexpr`, compiling math expressions into optimized C bytecode.
 * **Namespace Isolation:** Evaluated with isolated local and global dictionaries (`local_dict={}`, `global_dict={}`), preventing memory tampering or identifier resolution attacks.
-* **Pre-Execution Sanitization:** Strict regex character allowlisting (`[0-9+\-*/().\s%^]`), automated bracket-depth validation, comma thousands-separator stripping (`170,000,000` $\to$ `170000000`), and percentage pre-compilation.
+* **Pre-Execution Sanitization:** Strict regex character allowlisting (`[0-9+\-*/().\s%^]`), automated bracket-depth validation, comma thousands-separator stripping (`170,000,000` → `170000000`), caret exponentiation normalization (`^` → `**`), and percentage pre-compilation (`5%` → `(5 / 100)`).
 
 ### 2. Grounded Web Retrieval (`tools/search_tool.py`)
 * **Real-Time Fact Sourcing:** Interfaces directly with Tavily's Search API for dense factual extraction, stripping noise and reducing context token overhead.
@@ -102,7 +102,7 @@ python -m unittest discover tests -v
 
 ### Test Coverage Highlights
 * **Calculator (`tests/test_calculator.py`):**
-  * Blueprint benchmark expressions: `12 * 8` $\to$ `96`, `(150 - 120) / 120 * 100` $\to$ `25`, `5 / 100 * 170,000,000` $\to$ `8500000`.
+  * Blueprint benchmark expressions: `12 * 8` → `96`, `(150 - 120) / 120 * 100` → `25`, `5 / 100 * 170,000,000` → `8500000`.
   * Security test cases rejecting `__import__('os')`, variable injections, and malicious syntax.
   * Parentheses imbalance and zero-division recovery.
 * **Search Engine (`tests/test_tools.py`):**
