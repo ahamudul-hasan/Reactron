@@ -13,7 +13,7 @@ from tavily import (
 load_dotenv()
 
 MAX_QUERY_LENGTH = 300
-DEFAULT_MAX_RESULTS = 3
+DEFAULT_MAX_RESULTS = 2
 SEARCH_TIMEOUT_SECONDS = 15.0
 
 
@@ -69,6 +69,9 @@ def tavily_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, api_key: O
             title = _clean_text(item.get("title", "Untitled"))
             url = item.get("url", "").strip()
             content = _clean_text(item.get("content", ""))
+            # Keep snippets concise to minimize token overhead and speed up LLM processing
+            if len(content) > 280:
+                content = content[:280].rstrip() + "..."
 
             formatted_outputs.append(
                 f"[{i}] {title}\n"

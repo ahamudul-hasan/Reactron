@@ -1,9 +1,3 @@
-"""Reactron ReAct Agent Orchestration Module.
-
-This module builds and invokes the LangChain/LangGraph ReAct agent, coordinating
-the chat model, external tools (Search, Calculator, Safe Python), and trace capture.
-"""
-
 import os
 import re
 import time
@@ -51,10 +45,11 @@ Follow these strict operational rules:
 class TraceCallbackHandler(BaseCallbackHandler):
     """Callback handler measuring tool execution durations and event lifecycles."""
 
-    def __init__(self):
+    def __init__(self, step_callback=None):
         super().__init__()
         self.durations: Dict[str, float] = {}
         self._tool_starts: Dict[str, Dict[str, Any]] = {}
+        self.step_callback = step_callback
 
     def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id", ""))
@@ -63,6 +58,11 @@ class TraceCallbackHandler(BaseCallbackHandler):
             "start_time": time.perf_counter(),
             "tool_call_id": tool_call_id,
         }
+        if self.step_callback:
+            try:
+                self.step_callback("tool_start", {"tool": serialized.get("name", "tool"), "input": input_str})
+            except Exception:
+                pass
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> None:
         run_id = str(kwargs.get("run_id", ""))
@@ -75,6 +75,12 @@ class TraceCallbackHandler(BaseCallbackHandler):
             self.durations[str(tool_call_id)] = elapsed
         if run_id:
             self.durations[run_id] = elapsed
+
+        if self.step_callback:
+            try:
+                self.step_callback("tool_end", {"duration": elapsed, "output": str(output)})
+            except Exception:
+                pass
 
 
 def generate_decision_summary(tool_name: str, tool_input: Any) -> str:
@@ -153,6 +159,9 @@ def get_llm(model_name: Optional[str] = None, temperature: float = 0.0) -> ChatG
         model=selected_model,
         temperature=temperature,
         google_api_key=api_key,
+        max_retries=2,
+        timeout=30.0,
+        max_output_tokens=1024,
     )
 
 
@@ -186,13 +195,19 @@ def _extract_text_content(content: Any) -> str:
     return str(content)
 
 
-def run_agent(query: str, agent=None, max_iterations: int = DEFAULT_MAX_ITERATIONS) -> Dict[str, Any]:
+def run_agent(
+    query: str,
+    agent=None,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    on_step=None,
+) -> Dict[str, Any]:
     """Execute the agent on a user query and return the answer, trace, and citations.
 
     Args:
         query: User prompt or question string.
         agent: Optional pre-compiled agent runnable.
         max_iterations: Maximum reasoning cycles before halting execution (default: 8).
+        on_step: Optional callback(event_type, details) invoked on tool start/end.
 
     Returns:
         Dict containing:
@@ -225,7 +240,7 @@ def run_agent(query: str, agent=None, max_iterations: int = DEFAULT_MAX_ITERATIO
             "status": "error",
         }
 
-    cb_handler = TraceCallbackHandler()
+    cb_handler = TraceCallbackHandler(step_callback=on_step)
     start_total_t = time.perf_counter()
 
     try:

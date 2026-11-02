@@ -280,23 +280,45 @@ def handle_query(query_text: str):
     with st.chat_message("user", avatar="👤"):
         st.write(clean_text)
 
-    # Agent execution with progress spinner
+    # Agent execution with real-time status updates
     with st.chat_message("assistant", avatar="⚡"):
-        with st.spinner("Reactron is reasoning and executing tools..."):
-            try:
-                start_time = time.perf_counter()
-                result = run_agent(clean_text)
-                elapsed = time.perf_counter() - start_time
-                if "total_duration_seconds" not in result or result["total_duration_seconds"] == 0:
-                    result["total_duration_seconds"] = round(elapsed, 2)
-            except Exception as e:
-                result = {
-                    "output": f"An unexpected error occurred: {e}",
-                    "trace": [],
-                    "sources": [],
-                    "total_duration_seconds": 0.0,
-                    "status": "error",
-                }
+        status_box = st.status("⚡ Reactron is reasoning & formulating execution plan...", expanded=True)
+
+        def on_step_update(event_type: str, details: Dict[str, Any]):
+            if event_type == "tool_start":
+                tool = details.get("tool", "tool")
+                if "search" in tool:
+                    status_box.write("🌐 **Executing Tavily Web Search** to retrieve live facts...")
+                elif "calc" in tool:
+                    status_box.write("🧮 **Computing arithmetic** deterministically via NumExpr engine...")
+                elif "python" in tool:
+                    status_box.write("🔒 **Inspecting code safely** (execution disabled for security)...")
+                else:
+                    status_box.write(f"⚙️ Running `{tool}`...")
+            elif event_type == "tool_end":
+                dur = details.get("duration", 0.0)
+                status_box.write(f"✓ Observation received ({dur:.2f}s)")
+
+        try:
+            start_time = time.perf_counter()
+            result = run_agent(clean_text, on_step=on_step_update)
+            elapsed = time.perf_counter() - start_time
+            if "total_duration_seconds" not in result or result["total_duration_seconds"] == 0:
+                result["total_duration_seconds"] = round(elapsed, 2)
+            status_box.update(
+                label=f"✓ Completed reasoning & execution ({result['total_duration_seconds']:.2f}s)",
+                state="complete",
+                expanded=False,
+            )
+        except Exception as e:
+            result = {
+                "output": f"An unexpected error occurred: {e}",
+                "trace": [],
+                "sources": [],
+                "total_duration_seconds": 0.0,
+                "status": "error",
+            }
+            status_box.update(label="✗ Execution halted with error", state="error", expanded=True)
 
         # Store in session state
         st.session_state.messages.append({"query": clean_text, "result": result})
