@@ -134,6 +134,111 @@ class TestAgent(unittest.TestCase):
         self.assertIn(tool_call_id, cb.durations)
         self.assertGreaterEqual(cb.durations[tool_call_id], 0.0)
 
+    # --- Step 11: Stage C Agent Tests ---
+
+    def test_stage_c_calculator_invocation_trace(self):
+        """Stage C: What is 12 multiplied by 8? should use calculator_tool."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        mock_agent = MagicMock()
+        mock_agent.invoke.return_value = {
+            "messages": [
+                HumanMessage(content="What is 12 multiplied by 8?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "calculator_tool", "args": {"expression": "12 * 8"}, "id": "call_c1"}],
+                ),
+                ToolMessage(content="96", tool_call_id="call_c1", name="calculator_tool"),
+                AIMessage(content="12 multiplied by 8 is 96."),
+            ]
+        }
+
+        result = run_agent("What is 12 multiplied by 8?", agent=mock_agent)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["trace"]), 1)
+        self.assertEqual(result["trace"][0]["tool"], "calculator_tool")
+        self.assertEqual(result["trace"][0]["output"], "96")
+        self.assertIn("96", result["output"])
+
+    def test_stage_c_search_invocation_trace(self):
+        """Stage C: Search question should use search_tool and extract source URLs."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        mock_agent = MagicMock()
+        search_obs = (
+            "[1] UN Demographic Report\n"
+            "    URL: https://un.org/population/bangladesh\n"
+            "    Snippet: Bangladesh population estimated at 175M."
+        )
+        mock_agent.invoke.return_value = {
+            "messages": [
+                HumanMessage(content="Find the population of Bangladesh"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "search_tool", "args": {"query": "Bangladesh population"}, "id": "call_s1"}],
+                ),
+                ToolMessage(content=search_obs, tool_call_id="call_s1", name="search_tool"),
+                AIMessage(content="The population is 175M according to UN report."),
+            ]
+        }
+
+        result = run_agent("Find the population of Bangladesh", agent=mock_agent)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["trace"]), 1)
+        self.assertEqual(result["trace"][0]["tool"], "search_tool")
+        self.assertIn("https://un.org/population/bangladesh", result["sources"])
+
+    def test_stage_c_multi_step_sequential_trace(self):
+        """Stage C: Question requiring search then calculation uses both tools in order."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        mock_agent = MagicMock()
+        mock_agent.invoke.return_value = {
+            "messages": [
+                HumanMessage(content="Search Bangladesh population and calculate 5%"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "search_tool", "args": {"query": "Bangladesh population 2026"}, "id": "call_m1"}],
+                ),
+                ToolMessage(
+                    content="[1] Demographics\n    URL: https://en.wikipedia.org/wiki/BD\n    Snippet: Population is 170000000",
+                    tool_call_id="call_m1",
+                    name="search_tool",
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "calculator_tool", "args": {"expression": "170000000 * 0.05"}, "id": "call_m2"}],
+                ),
+                ToolMessage(content="8500000", tool_call_id="call_m2", name="calculator_tool"),
+                AIMessage(content="5% of 170,000,000 is 8,500,000."),
+            ]
+        }
+
+        result = run_agent("Search Bangladesh population and calculate 5%", agent=mock_agent)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["trace"]), 2)
+        self.assertEqual(result["trace"][0]["tool"], "search_tool")
+        self.assertEqual(result["trace"][1]["tool"], "calculator_tool")
+        self.assertEqual(result["trace"][1]["output"], "8500000")
+        self.assertIn("https://en.wikipedia.org/wiki/BD", result["sources"])
+
+    def test_stage_c_direct_answer_without_tools(self):
+        """Stage C: Factual question not needing tools produces direct answer with empty trace."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        mock_agent = MagicMock()
+        mock_agent.invoke.return_value = {
+            "messages": [
+                HumanMessage(content="What is the capital of France?"),
+                AIMessage(content="The capital of France is Paris."),
+            ]
+        }
+
+        result = run_agent("What is the capital of France?", agent=mock_agent)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["trace"]), 0)
+        self.assertEqual(result["output"], "The capital of France is Paris.")
+
 
 if __name__ == "__main__":
     unittest.main()
