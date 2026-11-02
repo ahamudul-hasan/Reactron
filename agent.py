@@ -6,11 +6,13 @@ the chat model, external tools (Search, Calculator, Safe Python), and trace capt
 
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
+from langchain_core.callbacks import BaseCallbackHandler
 
 from tools import calculator_tool, python_tool, search_tool
 
@@ -29,6 +31,87 @@ Follow these strict operational rules:
 4. When you answer, cite the sources or URLs provided in the search observations.
 5. Provide a direct, concise, and grounded final answer based strictly on tool observations.
 """
+
+
+class TraceCallbackHandler(BaseCallbackHandler):
+    """Callback handler measuring tool execution durations and event lifecycles."""
+
+    def __init__(self):
+        super().__init__()
+        self.durations: Dict[str, float] = {}
+        self._tool_starts: Dict[str, Dict[str, Any]] = {}
+
+    def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> None:
+        run_id = str(kwargs.get("run_id", ""))
+        tool_call_id = kwargs.get("tool_call_id")
+        self._tool_starts[run_id] = {
+            "start_time": time.perf_counter(),
+            "tool_call_id": tool_call_id,
+        }
+
+    def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        run_id = str(kwargs.get("run_id", ""))
+        info = self._tool_starts.pop(run_id, {})
+        start_t = info.get("start_time", time.perf_counter())
+        elapsed = round(time.perf_counter() - start_t, 3)
+
+        tool_call_id = info.get("tool_call_id")
+        if tool_call_id:
+            self.durations[str(tool_call_id)] = elapsed
+        if run_id:
+            self.durations[run_id] = elapsed
+
+
+def generate_decision_summary(tool_name: str, tool_input: Any) -> str:
+    """Generate an objective, fact-based summary explaining the tool invocation.
+
+    Avoids fabricating internal model reasoning or private thoughts.
+    """
+    clean_name = (tool_name or "").lower()
+
+    if "search" in clean_name:
+        query = ""
+        if isinstance(tool_input, dict):
+            query = tool_input.get("query", "")
+        elif isinstance(tool_input, str):
+            query = tool_input
+        if query:
+            return f"The agent needs current factual data or web verification, so it searches for: '{query}'."
+        return "The agent needs current factual data, so it searches the web."
+
+    elif "calc" in clean_name:
+        expr = ""
+        if isinstance(tool_input, dict):
+            expr = tool_input.get("expression", "")
+        elif isinstance(tool_input, str):
+            expr = tool_input
+        if expr:
+            return f"The agent needs an exact arithmetic evaluation, so it computes: {expr}."
+        return "The agent needs exact mathematical computation, so it runs the calculator."
+
+    elif "python" in clean_name:
+        return "The agent needs code preview or syntax inspection, so it invokes the Python tool."
+
+    return f"The agent executes {tool_name} to fulfill the user's request."
+
+
+def generate_observation_preview(tool_name: str, raw_output: str, max_chars: int = 250) -> str:
+    """Generate a clean, shortened preview of tool output."""
+    clean_name = (tool_name or "").lower()
+    raw_str = (raw_output or "").strip()
+
+    if "search" in clean_name:
+        result_count = len(re.findall(r"\[\d+\]", raw_str))
+        first_title_match = re.search(r"\[1\]\s*(.+)", raw_str)
+        if result_count > 0:
+            first_title = first_title_match.group(1).strip() if first_title_match else ""
+            if first_title:
+                return f"Found {result_count} result snippet(s) and source URLs (Top source: {first_title})."
+            return f"Found {result_count} result snippet(s) and source URLs."
+
+    if len(raw_str) <= max_chars:
+        return raw_str
+    return raw_str[:max_chars].rstrip() + "..."
 
 
 def get_llm(model_name: Optional[str] = None, temperature: float = 0.0) -> ChatGoogleGenerativeAI:
@@ -98,8 +181,9 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
     Returns:
         Dict containing:
             - output: Final text response
-            - trace: List of tool execution events (tool, input, output, status)
+            - trace: List of tool execution events (tool, decision_summary, input, output, preview, duration_seconds, status)
             - sources: Deduplicated list of source URLs discovered during search
+            - total_duration_seconds: Float duration in seconds
             - status: "success" or "error"
     """
     if not isinstance(query, str) or not query.strip():
@@ -107,6 +191,7 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
             "output": "Error: Query cannot be empty.",
             "trace": [],
             "sources": [],
+            "total_duration_seconds": 0.0,
             "status": "error",
         }
 
@@ -119,18 +204,28 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
             "output": f"Configuration Error: {e}",
             "trace": [],
             "sources": [],
+            "total_duration_seconds": 0.0,
             "status": "error",
         }
 
+    cb_handler = TraceCallbackHandler()
+    start_total_t = time.perf_counter()
+
     try:
-        response = active_agent.invoke({"messages": [{"role": "user", "content": clean_query}]})
+        response = active_agent.invoke(
+            {"messages": [{"role": "user", "content": clean_query}]},
+            config={"callbacks": [cb_handler]},
+        )
     except Exception as e:
         return {
             "output": f"Execution Error: {e}",
             "trace": [],
             "sources": [],
+            "total_duration_seconds": round(time.perf_counter() - start_total_t, 3),
             "status": "error",
         }
+
+    total_duration = round(time.perf_counter() - start_total_t, 3)
 
     messages = response.get("messages", [])
     tool_calls_map: Dict[str, Dict[str, Any]] = {}
@@ -167,10 +262,19 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
             is_err = "error" in raw_output.lower() and not raw_output.startswith("Security Notice")
             trace_status = "error" if is_err else "success"
 
+            # Duration from callback
+            step_duration = cb_handler.durations.get(str(tc_id))
+
+            decision_summary = generate_decision_summary(tool_name, tool_input)
+            preview = generate_observation_preview(tool_name, raw_output)
+
             trace.append({
                 "tool": tool_name,
+                "decision_summary": decision_summary,
                 "input": tool_input,
                 "output": raw_output,
+                "preview": preview,
+                "duration_seconds": step_duration,
                 "status": trace_status,
             })
 
@@ -188,12 +292,53 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
         "output": final_answer or "No response generated.",
         "trace": trace,
         "sources": sources,
+        "total_duration_seconds": total_duration,
         "status": "success",
     }
 
 
+def format_trace_display(result: Dict[str, Any]) -> str:
+    """Format the agent execution trace into a clean, labeled display matching blueprint Step 9."""
+    sections = []
+
+    trace_steps = result.get("trace", [])
+    for i, step in enumerate(trace_steps, 1):
+        lines = []
+        lines.append(f"Decision summary\n{step.get('decision_summary', '')}\n")
+        lines.append(f"Tool call: {step.get('tool')}")
+
+        inp = step.get("input", {})
+        if isinstance(inp, dict):
+            inp_str = ", ".join(f"{k}: {v}" for k, v in inp.items()) if inp else "{}"
+        else:
+            inp_str = str(inp)
+        lines.append(f"Input: {inp_str}")
+
+        dur = step.get("duration_seconds")
+        if dur is not None:
+            lines.append(f"Duration: {dur:.3f}s")
+
+        lines.append(f"Status: {step.get('status')}")
+        lines.append(f"Observation: {step.get('preview', step.get('output', ''))}")
+        sections.append("\n".join(lines))
+
+    # Final Answer section
+    final_lines = ["Final answer", result.get("output", "")]
+    sources = result.get("sources", [])
+    if sources:
+        final_lines.append("\nSources:")
+        for s in sources:
+            final_lines.append(f"- {s}")
+
+    if result.get("total_duration_seconds") is not None:
+        final_lines.append(f"\nExecution Duration: {result['total_duration_seconds']:.2f}s")
+
+    sections.append("\n".join(final_lines))
+    return "\n\n" + ("\n\n" + "-" * 50 + "\n\n").join(sections) + "\n"
+
+
 def main():
-    """Command-line entrypoint to run the agent."""
+    """Command-line entrypoint to run the agent with trace display."""
     import sys
 
     # Set UTF-8 encoding for console output
@@ -204,7 +349,7 @@ def main():
             pass
 
     print("=" * 65)
-    print("REACTRON AGENT: COMMAND-LINE RUNNER (STEP 8)")
+    print("REACTRON AGENT: EXECUTION TRACE VIEWER (STEP 9)")
     print("=" * 65)
 
     if len(sys.argv) > 1:
@@ -216,24 +361,10 @@ def main():
         )
 
     print(f"\nUser Query: {query}\n")
-    print("Running agent thinking & acting loop...")
+    print("Executing ReAct reasoning & tool-use loop...")
 
     result = run_agent(query)
-
-    print("\n" + "-" * 40 + " AGENT TRACE " + "-" * 40)
-    for i, step in enumerate(result["trace"], 1):
-        print(f"\n[Step {i}] Tool: {step['tool']} ({step['status']})")
-        print(f"  Input:  {step['input']}")
-        preview = step["output"][:200] + ("..." if len(step["output"]) > 200 else "")
-        print(f"  Output: {preview}")
-
-    print("\n" + "=" * 40 + " FINAL ANSWER " + "=" * 40)
-    print(result["output"])
-
-    if result["sources"]:
-        print("\n" + "-" * 40 + " CITATIONS " + "-" * 40)
-        for src in result["sources"]:
-            print(f"- {src}")
+    print(format_trace_display(result))
     print("=" * 65)
 
 
