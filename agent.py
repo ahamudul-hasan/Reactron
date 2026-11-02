@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
+from langgraph.errors import GraphRecursionError
 
 from tools import calculator_tool, python_tool, search_tool
 
@@ -20,7 +21,21 @@ from tools import calculator_tool, python_tool, search_tool
 load_dotenv()
 
 DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+DEFAULT_MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "8"))
 FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.7-flash"]
+
+
+def redact_secrets(text: str) -> str:
+    """Mask sensitive tokens, API keys, and credentials from output strings."""
+    if not isinstance(text, str):
+        return text
+    # Tavily keys: tvly-...
+    redacted = re.sub(r"tvly-[A-Za-z0-9_-]{8,}", "[REDACTED_TAVILY_KEY]", text)
+    # Google keys: AIzaSy...
+    redacted = re.sub(r"AIzaSy[A-Za-z0-9_-]{25,}", "[REDACTED_GOOGLE_KEY]", redacted)
+    # Generic tokens: sk-...
+    redacted = re.sub(r"sk-[A-Za-z0-9_-]{20,}", "[REDACTED_API_KEY]", redacted)
+    return redacted
 
 SYSTEM_PROMPT = """You are Reactron, an expert analytical AI assistant that solves multi-step problems using reasoning and tools.
 
@@ -171,16 +186,17 @@ def _extract_text_content(content: Any) -> str:
     return str(content)
 
 
-def run_agent(query: str, agent=None) -> Dict[str, Any]:
+def run_agent(query: str, agent=None, max_iterations: int = DEFAULT_MAX_ITERATIONS) -> Dict[str, Any]:
     """Execute the agent on a user query and return the answer, trace, and citations.
 
     Args:
         query: User prompt or question string.
         agent: Optional pre-compiled agent runnable.
+        max_iterations: Maximum reasoning cycles before halting execution (default: 8).
 
     Returns:
         Dict containing:
-            - output: Final text response
+            - output: Final text response (with secrets redacted)
             - trace: List of tool execution events (tool, decision_summary, input, output, preview, duration_seconds, status)
             - sources: Deduplicated list of source URLs discovered during search
             - total_duration_seconds: Float duration in seconds
@@ -200,8 +216,9 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
     try:
         active_agent = agent or build_agent()
     except Exception as e:
+        safe_err = redact_secrets(str(e))
         return {
-            "output": f"Configuration Error: {e}",
+            "output": f"Configuration Error: {safe_err}",
             "trace": [],
             "sources": [],
             "total_duration_seconds": 0.0,
@@ -212,13 +229,27 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
     start_total_t = time.perf_counter()
 
     try:
+        # Each ReAct loop cycle involves model call + tool call, so allow 2 * max_iterations
+        recursion_limit = max_iterations * 2
         response = active_agent.invoke(
             {"messages": [{"role": "user", "content": clean_query}]},
-            config={"callbacks": [cb_handler]},
+            config={"callbacks": [cb_handler], "recursion_limit": recursion_limit},
         )
-    except Exception as e:
+    except GraphRecursionError:
         return {
-            "output": f"Execution Error: {e}",
+            "output": (
+                f"Execution Error: Agent reached the maximum iteration limit ({max_iterations} iterations) "
+                "without reaching a final answer. Execution was halted to prevent an infinite loop."
+            ),
+            "trace": [],
+            "sources": [],
+            "total_duration_seconds": round(time.perf_counter() - start_total_t, 3),
+            "status": "error",
+        }
+    except Exception as e:
+        safe_err = redact_secrets(str(e))
+        return {
+            "output": f"Execution Error: {safe_err}",
             "trace": [],
             "sources": [],
             "total_duration_seconds": round(time.perf_counter() - start_total_t, 3),
@@ -256,7 +287,7 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
             tc_info = tool_calls_map.get(tc_id, {})
             tool_name = getattr(msg, "name", None) or tc_info.get("tool", "tool")
             tool_input = tc_info.get("input", {})
-            raw_output = _extract_text_content(msg.content)
+            raw_output = redact_secrets(_extract_text_content(msg.content))
 
             # Determine execution status
             is_err = "error" in raw_output.lower() and not raw_output.startswith("Security Notice")
@@ -289,7 +320,7 @@ def run_agent(query: str, agent=None) -> Dict[str, Any]:
         final_answer = _extract_text_content(messages[-1].content)
 
     return {
-        "output": final_answer or "No response generated.",
+        "output": redact_secrets(final_answer or "No response generated."),
         "trace": trace,
         "sources": sources,
         "total_duration_seconds": total_duration,

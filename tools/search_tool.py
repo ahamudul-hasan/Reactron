@@ -2,6 +2,7 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+import requests.exceptions
 from tavily import (
     BadRequestError,
     InvalidAPIKeyError,
@@ -13,6 +14,7 @@ load_dotenv()
 
 MAX_QUERY_LENGTH = 300
 DEFAULT_MAX_RESULTS = 3
+SEARCH_TIMEOUT_SECONDS = 15.0
 
 
 def _clean_text(text: str) -> str:
@@ -82,6 +84,10 @@ def tavily_search(query: str, max_results: int = DEFAULT_MAX_RESULTS, api_key: O
         return "Error: Tavily API usage limit or rate limit exceeded. Please try again later."
     except BadRequestError as e:
         return f"Error: Tavily search bad request: {e}"
+    except (requests.exceptions.Timeout, TimeoutError):
+        return "Error: Tavily search request timed out after 15 seconds. Please try again later."
+    except requests.exceptions.ConnectionError:
+        return "Error: Could not connect to Tavily search service. Check your internet connection."
     except Exception as e:
         return f"Error connecting to Tavily search service: {e}"
 

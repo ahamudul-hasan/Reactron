@@ -8,6 +8,7 @@ from agent import (
     generate_decision_summary,
     generate_observation_preview,
     get_llm,
+    redact_secrets,
     run_agent,
     TraceCallbackHandler,
 )
@@ -238,6 +239,34 @@ class TestAgent(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(result["trace"]), 0)
         self.assertEqual(result["output"], "The capital of France is Paris.")
+
+    # --- Step 12: Observability & Reliability Tests ---
+
+    def test_redact_secrets(self):
+        """Step 12: Sensitive API tokens and credentials must be redacted from strings."""
+        raw_text = (
+            "Error using key tvly-abcdef1234567890 and key "
+            "AIzaSyD_TestGoogleKey1234567890abcdef and sk-1234567890abcdef123456."
+        )
+        safe_text = redact_secrets(raw_text)
+        self.assertNotIn("tvly-abcdef1234567890", safe_text)
+        self.assertNotIn("AIzaSyD_TestGoogleKey1234567890abcdef", safe_text)
+        self.assertNotIn("sk-1234567890abcdef123456", safe_text)
+        self.assertIn("[REDACTED_TAVILY_KEY]", safe_text)
+        self.assertIn("[REDACTED_GOOGLE_KEY]", safe_text)
+        self.assertIn("[REDACTED_API_KEY]", safe_text)
+
+    def test_recursion_limit_error_handling(self):
+        """Step 12: Reaching maximum recursion limit produces helpful error instead of crashing."""
+        from langgraph.errors import GraphRecursionError
+
+        mock_agent = MagicMock()
+        mock_agent.invoke.side_effect = GraphRecursionError("Recursion limit reached")
+
+        result = run_agent("Looping question", agent=mock_agent, max_iterations=4)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("maximum iteration limit", result["output"])
+        self.assertIn("4 iterations", result["output"])
 
 
 if __name__ == "__main__":
