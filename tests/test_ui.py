@@ -69,8 +69,8 @@ class TestStreamlitUI(unittest.TestCase):
         at.run()
 
         self.assertFalse(at.exception)
-        # Verify expander for trace exists
-        self.assertGreaterEqual(len(at.expander), 1)
+        # Verify rendered interaction exists
+        self.assertGreaterEqual(len(at.chat_message), 2)
 
     def test_stage_d_error_handling_without_secrets(self):
         """Stage D: Tool failures and errors are displayed safely without exposing secrets."""

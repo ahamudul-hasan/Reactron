@@ -216,52 +216,6 @@ def render_interaction(item: Dict[str, Any], is_latest: bool = False):
             unsafe_allow_html=True,
         )
 
-        # 4. Expandable Execution Trace
-        if trace:
-            expander_title = f"🔍 View Execution Trace ({len(trace)} step{'s' if len(trace) > 1 else ''})"
-            with st.expander(expander_title, expanded=is_latest):
-                for idx, step in enumerate(trace, 1):
-                    tool_name = step.get("tool", "tool")
-                    icon = get_tool_icon(tool_name)
-                    dur = step.get("duration_seconds")
-                    dur_str = f" • ⏱️ {dur:.3f}s" if dur is not None else ""
-                    step_status = step.get("status", "success")
-                    badge_class = "badge-success" if step_status == "success" else "badge-error"
-
-                    st.markdown(
-                        f"""
-                        <div class="trace-card">
-                            <div style="font-weight: 600; font-size: 1rem; margin-bottom: 0.4rem;">
-                                {icon} Step {idx}: <code>{html.escape(tool_name)}</code>
-                                <span class="badge {badge_class}">{step_status}</span>
-                                <span style="font-size: 0.8rem; color: #94A3B8;">{dur_str}</span>
-                            </div>
-                            <div class="decision-box">
-                                <strong>Decision summary:</strong> {html.escape(step.get('decision_summary', ''))}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    c1, c2 = st.columns([1, 2])
-                    with c1:
-                        st.caption("Tool Input")
-                        st.json(step.get("input", {}))
-                    with c2:
-                        st.caption("Observation")
-                        raw_out = step.get("output", "")
-                        if len(raw_out) > 500:
-                            st.text_area(
-                                "Observation Details",
-                                value=raw_out,
-                                height=150,
-                                key=f"obs_{idx}_{hash(raw_out)}",
-                                disabled=True,
-                            )
-                        else:
-                            st.code(raw_out, language="text")
-
 
 # --- Render Conversation History ---
 for i, item in enumerate(st.session_state.messages):
@@ -298,6 +252,10 @@ def handle_query(query_text: str):
             elif event_type == "tool_end":
                 dur = details.get("duration", 0.0)
                 status_box.write(f"✓ Observation received ({dur:.2f}s)")
+            elif event_type == "model_failover":
+                failed = details.get("failed_model", "primary model")
+                next_m = details.get("next_model", "backup model")
+                status_box.write(f"⚠️ Model `{failed}` experiencing high demand (503/429); automatically failing over to `{next_m}`...")
 
         try:
             start_time = time.perf_counter()

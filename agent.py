@@ -14,9 +14,14 @@ from tools import calculator_tool, python_tool, search_tool
 # Load local environment variables from .env
 load_dotenv()
 
-DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 DEFAULT_MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "8"))
-FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.7-flash"]
+FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+]
 
 
 def redact_secrets(text: str) -> str:
@@ -228,41 +233,81 @@ def run_agent(
 
     clean_query = query.strip()
 
-    try:
-        active_agent = agent or build_agent()
-    except Exception as e:
-        safe_err = redact_secrets(str(e))
+    cb_handler = TraceCallbackHandler(step_callback=on_step)
+    start_total_t = time.perf_counter()
+    recursion_limit = max_iterations * 2
+
+    # Determine candidate models to attempt (with automatic failover on 503 / 429)
+    if agent is not None:
+        agent_candidates = [(getattr(agent, "model_name", "custom_agent"), agent)]
+    else:
+        configured_model = os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
+        model_names = [configured_model] + [m for m in FALLBACK_MODELS if m != configured_model]
+        agent_candidates = []
+        for m in model_names:
+            try:
+                candidate_llm = get_llm(model_name=m)
+                candidate_agent = build_agent(llm=candidate_llm)
+                agent_candidates.append((m, candidate_agent))
+            except Exception:
+                continue
+
+    if not agent_candidates:
         return {
-            "output": f"Configuration Error: {safe_err}",
+            "output": "Configuration Error: No valid LLM models could be initialized.",
             "trace": [],
             "sources": [],
             "total_duration_seconds": 0.0,
             "status": "error",
         }
 
-    cb_handler = TraceCallbackHandler(step_callback=on_step)
-    start_total_t = time.perf_counter()
+    response = None
+    last_error = None
 
-    try:
-        # Each ReAct loop cycle involves model call + tool call, so allow 2 * max_iterations
-        recursion_limit = max_iterations * 2
-        response = active_agent.invoke(
-            {"messages": [{"role": "user", "content": clean_query}]},
-            config={"callbacks": [cb_handler], "recursion_limit": recursion_limit},
-        )
-    except GraphRecursionError:
-        return {
-            "output": (
-                f"Execution Error: Agent reached the maximum iteration limit ({max_iterations} iterations) "
-                "without reaching a final answer. Execution was halted to prevent an infinite loop."
-            ),
-            "trace": [],
-            "sources": [],
-            "total_duration_seconds": round(time.perf_counter() - start_total_t, 3),
-            "status": "error",
-        }
-    except Exception as e:
-        safe_err = redact_secrets(str(e))
+    for idx, (model_label, active_agent) in enumerate(agent_candidates):
+        try:
+            response = active_agent.invoke(
+                {"messages": [{"role": "user", "content": clean_query}]},
+                config={"callbacks": [cb_handler], "recursion_limit": recursion_limit},
+            )
+            last_error = None
+            break
+        except GraphRecursionError as e:
+            return {
+                "output": (
+                    f"Execution Error: Agent reached the maximum iteration limit ({max_iterations} iterations) "
+                    "without reaching a final answer. Execution was halted to prevent an infinite loop."
+                ),
+                "trace": [],
+                "sources": [],
+                "total_duration_seconds": round(time.perf_counter() - start_total_t, 3),
+                "status": "error",
+            }
+        except Exception as e:
+            err_str = str(e)
+            is_transient = any(
+                code in err_str
+                for code in ["503", "429", "404", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "NOT_FOUND"]
+            )
+            last_error = e
+
+            # If transient error and more fallback models remain, attempt automatic failover
+            if is_transient and idx < len(agent_candidates) - 1:
+                next_model_label = agent_candidates[idx + 1][0]
+                if on_step:
+                    try:
+                        on_step(
+                            "model_failover",
+                            {"failed_model": model_label, "next_model": next_model_label, "error": err_str},
+                        )
+                    except Exception:
+                        pass
+                continue
+            else:
+                break
+
+    if response is None:
+        safe_err = redact_secrets(str(last_error))
         return {
             "output": f"Execution Error: {safe_err}",
             "trace": [],
